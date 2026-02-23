@@ -1,0 +1,40 @@
+[package]
+name = "umiterm"
+version = "0.1.0"
+edition = "2021"
+description = "水色テーマの高速ターミナルエミュレータ"
+authors = ["UmiTerm Team"]
+
+[dependencies]
+# GPU レンダリング（高速描画の要）
+wgpu = "25"
+# ウィンドウ管理
+winit = "0.30"
+# PTY（擬似端末）操作 - シェルとの通信
+portable-pty = "0.8"
+# ANSI エスケープシーケンスパーサー（超高速）
+vte = "0.13"
+# 高速なロック機構
+parking_lot = "0.12"
+# スレッド間通信（ロックフリー）
+crossbeam-channel = "0.5"
+# 非同期ランタイム
+pollster = "0.4"
+# ログ
+log = "0.4"
+env_logger = "0.11"
+# エラーハンドリング
+anyhow = "1.0"
+# フォントレンダリング
+fontdue = "0.9"
+# バイトオーダー処理
+bytemuck = { version = "1.21", features = ["derive"] }
+# ビットフラグ
+bitflags = "2.6"
+
+[profile.release]
+# 最大限の最適化
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
