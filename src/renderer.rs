@@ -50,7 +50,7 @@ fn load_system_font() -> Result<Font> {
     }
 
     // 環境変数でカスタムフォントを指定可能
-    if let Ok(custom_path) = std::env::var("BLAZETERM_FONT") {
+    if let Ok(custom_path) = std::env::var("UMITERM_FONT") {
         let data = fs::read(&custom_path)
             .with_context(|| format!("カスタムフォントの読み込みに失敗: {}", custom_path))?;
         return Font::from_bytes(data, FontSettings::default())
@@ -59,8 +59,37 @@ fn load_system_font() -> Result<Font> {
 
     anyhow::bail!(
         "システムフォントが見つかりません。\n\
-         BLAZETERM_FONT 環境変数でフォントパスを指定してください。"
+         UMITERM_FONT 環境変数でフォントパスを指定してください。"
     )
+}
+
+/// 日本語フォールバックフォントを読み込む
+fn load_japanese_font() -> Option<Font> {
+    let font_paths = [
+        // macOS - 日本語フォント
+        "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        // Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        // Windows
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/YuGothM.ttc",
+    ];
+
+    for path in &font_paths {
+        if let Ok(data) = fs::read(path) {
+            if let Ok(font) = Font::from_bytes(data, FontSettings::default()) {
+                log::info!("日本語フォントを読み込みました: {}", path);
+                return Some(font);
+            }
+        }
+    }
+
+    log::warn!("日本語フォールバックフォントが見つかりません");
+    None
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -150,14 +179,32 @@ impl GlyphAtlas {
     }
 
     /// グリフを追加（なければラスタライズ）
-    fn get_or_insert(&mut self, c: char, font: &Font, font_size: f32) -> Option<GlyphInfo> {
+    fn get_or_insert(
+        &mut self,
+        c: char,
+        font: &Font,
+        fallback_font: Option<&Font>,
+        font_size: f32,
+    ) -> Option<GlyphInfo> {
         // キャッシュにあればそれを返す
         if let Some(info) = self.glyphs.get(&c) {
             return Some(info.clone());
         }
 
-        // ラスタライズ
-        let (metrics, bitmap) = font.rasterize(c, font_size);
+        // メインフォントでラスタライズを試みる
+        let (metrics, bitmap) = if font.has_glyph(c) {
+            font.rasterize(c, font_size)
+        } else if let Some(fb) = fallback_font {
+            // フォールバックフォントを試す
+            if fb.has_glyph(c) {
+                fb.rasterize(c, font_size)
+            } else {
+                // どちらにもない場合はメインフォントで（豆腐になる）
+                font.rasterize(c, font_size)
+            }
+        } else {
+            font.rasterize(c, font_size)
+        };
 
         if metrics.width == 0 || metrics.height == 0 {
             // 空白文字など
@@ -254,6 +301,8 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     /// フォント
     font: Font,
+    /// フォールバックフォント（日本語等）
+    fallback_font: Option<Font>,
     /// フォントサイズ
     font_size: f32,
     /// セル幅
@@ -309,6 +358,8 @@ impl Renderer {
 
         // フォントをロード（システムフォントから動的に読み込み）
         let font = load_system_font()?;
+        // 日本語フォールバックフォントを読み込み
+        let fallback_font = load_japanese_font();
 
         let font_size = DEFAULT_FONT_SIZE;
 
@@ -541,6 +592,7 @@ impl Renderer {
             bind_group,
             uniform_buffer,
             font,
+            fallback_font,
             font_size,
             cell_width,
             cell_height,
@@ -664,6 +716,7 @@ impl Renderer {
                     if let Some(glyph) = self.glyph_atlas.get_or_insert(
                         cell.character,
                         &self.font,
+                        self.fallback_font.as_ref(),
                         self.font_size,
                     ) {
                         instances.push(CellInstance {
@@ -691,6 +744,7 @@ impl Renderer {
             if let Some(glyph) = self.glyph_atlas.get_or_insert(
                 cursor_char,
                 &self.font,
+                self.fallback_font.as_ref(),
                 self.font_size,
             ) {
                 instances.push(CellInstance {
@@ -730,5 +784,10 @@ impl Renderer {
         let cols = (self.width as f32 / self.cell_width).floor() as u16;
         let rows = (self.height as f32 / self.cell_height).floor() as u16;
         (cols.max(1), rows.max(1))
+    }
+
+    /// セルサイズを取得（IMEカーソル位置計算用）
+    pub fn cell_size(&self) -> (f32, f32) {
+        (self.cell_width, self.cell_height)
     }
 }

@@ -31,6 +31,7 @@ fontdue = "0.9"
 bytemuck = { version = "1.21", features = ["derive"] }
 # ビットフラグ
 bitflags = "2.6"
+unicode-width = "0.2.2"
 
 [profile.release]
 # 最大限の最適化

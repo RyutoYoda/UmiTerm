@@ -2,6 +2,8 @@
 //!
 //! カーソル位置、スクロール領域、モードなどの状態を管理
 
+use unicode_width::UnicodeWidthChar;
+
 use crate::grid::{Cell, CellFlags, Color, Grid};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -164,10 +166,14 @@ impl Terminal {
             return;
         }
 
+        // 文字幅を取得（全角は2、半角は1）
+        let char_width = c.width().unwrap_or(1);
+
         // 画面外なら無視
         let cols = self.active_grid().cols;
 
-        if self.cursor.col >= cols {
+        // 全角文字が入りきらない場合も改行
+        if self.cursor.col + char_width > cols {
             if self.mode.contains(TerminalMode::AUTO_WRAP) {
                 // 自動改行
                 self.cursor.col = 0;
@@ -177,7 +183,7 @@ impl Terminal {
                     self.cursor.row = self.scroll_bottom;
                 }
             } else {
-                self.cursor.col = cols - 1;
+                self.cursor.col = cols - char_width;
             }
         }
 
@@ -192,7 +198,19 @@ impl Terminal {
         let col = self.cursor.col;
         let row = self.cursor.row;
         self.active_grid_mut().set(col, row, cell);
-        self.cursor.col += 1;
+
+        // 全角文字の場合、2セル目を空白で埋める
+        if char_width == 2 && col + 1 < cols {
+            let spacer = Cell {
+                character: ' ',
+                fg: self.current_style.fg,
+                bg: self.current_style.bg,
+                flags: self.current_style.flags,
+            };
+            self.active_grid_mut().set(col + 1, row, spacer);
+        }
+
+        self.cursor.col += char_width;
     }
 
     /// 制御文字を処理
@@ -391,6 +409,8 @@ impl Terminal {
         if self.mode.contains(TerminalMode::ALT_SCREEN) {
             self.mode.remove(TerminalMode::ALT_SCREEN);
             self.restore_cursor();
+            // メイン画面を再描画するためにダーティにする
+            self.grid.mark_all_dirty();
         }
     }
 

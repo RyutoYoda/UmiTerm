@@ -41,7 +41,8 @@ use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, KeyEvent, WindowEvent},
+    dpi::{PhysicalPosition, PhysicalSize},
+    event::{ElementState, Ime, KeyEvent, Modifiers, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
@@ -63,6 +64,26 @@ const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const INITIAL_WIDTH: u32 = 1024;
 const INITIAL_HEIGHT: u32 = 768;
 
+/// 起動バナー（水色テーマ）
+const STARTUP_BANNER: &str = concat!(
+    "\x1b[38;2;80;220;200m",  // エメラルドブルー
+    "\r\n",
+    "  ██╗   ██╗███╗   ███╗██╗████████╗███████╗██████╗ ███╗   ███╗\r\n",
+    "  ██║   ██║████╗ ████║██║╚══██╔══╝██╔════╝██╔══██╗████╗ ████║\r\n",
+    "  ██║   ██║██╔████╔██║██║   ██║   █████╗  ██████╔╝██╔████╔██║\r\n",
+    "  ██║   ██║██║╚██╔╝██║██║   ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║\r\n",
+    "  ╚██████╔╝██║ ╚═╝ ██║██║   ██║   ███████╗██║  ██║██║ ╚═╝ ██║\r\n",
+    "   ╚═════╝ ╚═╝     ╚═╝╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝\r\n",
+    "\x1b[38;2;60;180;170m",  // 少し暗めのシアン
+    "  ─────────────────────────────────────────────────────────────\r\n",
+    "\x1b[38;2;100;200;190m", // 明るいシアン
+    "  ≋ GPU-Accelerated Terminal Emulator                     v0.1\r\n",
+    "\x1b[38;2;60;180;170m",
+    "  ─────────────────────────────────────────────────────────────\r\n",
+    "\x1b[0m",
+    "\r\n",
+);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // アプリケーション状態
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,6 +104,10 @@ struct App {
     last_frame: Instant,
     /// 終了フラグ
     should_exit: bool,
+    /// IME入力中フラグ
+    ime_active: bool,
+    /// 修飾キーの状態
+    modifiers: Modifiers,
 }
 
 impl App {
@@ -96,6 +121,8 @@ impl App {
             pty: None,
             last_frame: Instant::now(),
             should_exit: false,
+            ime_active: false,
+            modifiers: Modifiers::default(),
         }
     }
 
@@ -148,11 +175,23 @@ impl App {
         // PTYを起動
         let pty = Pty::spawn(cols, rows, None)?;
 
+        // IME（日本語入力）を有効化
+        window.set_ime_allowed(true);
+
         self.window = Some(window);
         self.renderer = Some(renderer);
         self.pty = Some(pty);
 
+        // 起動バナーを表示
+        self.show_startup_banner();
+
         Ok(())
+    }
+
+    /// 起動バナーを表示
+    fn show_startup_banner(&mut self) {
+        let mut terminal = self.terminal.lock();
+        self.parser.process(&mut terminal, STARTUP_BANNER.as_bytes());
     }
 
     /// フレームを更新
@@ -203,6 +242,20 @@ impl App {
             return;
         }
 
+        // IME入力中はキーイベントをスキップ（ただし特殊キーは通す）
+        if self.ime_active {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape) |
+                Key::Named(NamedKey::Enter) |
+                Key::Named(NamedKey::Backspace) => {
+                    // これらは通す
+                }
+                _ => return,
+            }
+        }
+
+        let ctrl = self.modifiers.state().control_key();
+
         // キーをバイト列に変換してPTYに送信
         let bytes: Option<Vec<u8>> = match &event.logical_key {
             // 名前付きキー
@@ -224,13 +277,115 @@ impl App {
                 NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
                 _ => None,
             },
-            // 文字キー
-            Key::Character(c) => Some(c.as_bytes().to_vec()),
+            // 文字キー（Ctrl修飾キーの処理を含む）
+            Key::Character(c) => {
+                // IME関連のキー（textがない）はスキップ
+                if event.text.is_none() && !ctrl {
+                    log::debug!("Skipping key without text: {:?}", c);
+                    return;
+                }
+
+                // ASCII印刷可能文字以外はスキップ（日本語はIME::Commitで送信される）
+                if !ctrl {
+                    if let Some(ch) = c.chars().next() {
+                        // ASCII印刷可能文字（0x20-0x7E）以外はスキップ
+                        if !(ch >= ' ' && ch <= '~') {
+                            log::info!("Skipping non-ASCII char: '{}' U+{:04X}", ch, ch as u32);
+                            return;
+                        }
+                    }
+                }
+
+                if ctrl {
+                    // Ctrl+文字 の処理
+                    let ch = c.chars().next().unwrap_or(' ');
+                    match ch.to_ascii_lowercase() {
+                        'c' => Some(vec![0x03]), // Ctrl+C (ETX)
+                        'd' => Some(vec![0x04]), // Ctrl+D (EOT)
+                        'z' => Some(vec![0x1a]), // Ctrl+Z (SUB)
+                        'l' => Some(vec![0x0c]), // Ctrl+L (FF - clear screen)
+                        'a' => Some(vec![0x01]), // Ctrl+A
+                        'e' => Some(vec![0x05]), // Ctrl+E
+                        'u' => Some(vec![0x15]), // Ctrl+U
+                        'k' => Some(vec![0x0b]), // Ctrl+K
+                        'w' => Some(vec![0x17]), // Ctrl+W
+                        'r' => Some(vec![0x12]), // Ctrl+R
+                        _ => None,
+                    }
+                } else {
+                    // 通常の文字入力（textフィールドを使用）
+                    event.text.as_ref().map(|t| t.as_bytes().to_vec())
+                }
+            }
+            // Dead key（IME入力開始など）は無視
+            Key::Dead(_) => None,
             _ => None,
         };
 
         if let (Some(bytes), Some(pty)) = (bytes, &self.pty) {
+            // デバッグ: 送信するバイトをログ出力
+            if bytes.len() == 1 && bytes[0] > 0x7f {
+                log::warn!("Sending non-ASCII byte: 0x{:02X}", bytes[0]);
+            } else if bytes.iter().any(|&b| b > 0x7f) {
+                log::info!("Sending bytes: {:?} = {:?}", bytes, String::from_utf8_lossy(&bytes));
+            }
             let _ = pty.write(&bytes);
+        }
+    }
+
+    /// IME入力を処理（日本語入力など）
+    fn handle_ime(&mut self, ime: &Ime) {
+        match ime {
+            Ime::Commit(text) => {
+                log::info!("IME Commit: {:?}", text);
+                // 空文字や制御文字のみの場合はスキップ
+                if text.is_empty() {
+                    self.ime_active = false;
+                    return;
+                }
+                // †（U+2020）などの特殊文字をフィルタリング
+                let filtered: String = text.chars()
+                    .filter(|&c| c >= ' ' && c != '\u{2020}' && c != '\u{2021}')
+                    .collect();
+                if !filtered.is_empty() {
+                    if let Some(pty) = &self.pty {
+                        let _ = pty.write(filtered.as_bytes());
+                    }
+                }
+                self.ime_active = false;
+            }
+            Ime::Preedit(text, _cursor) => {
+                // 未確定テキスト（変換中）
+                self.ime_active = !text.is_empty();
+                // IMEカーソル位置を更新
+                self.update_ime_cursor_area();
+            }
+            Ime::Enabled => {
+                // IME有効時もアクティブに設定
+                self.ime_active = true;
+                // IMEカーソル位置を設定
+                self.update_ime_cursor_area();
+            }
+            Ime::Disabled => {
+                self.ime_active = false;
+            }
+        }
+    }
+
+    /// IMEカーソルエリアを更新（変換候補ウィンドウの位置）
+    fn update_ime_cursor_area(&self) {
+        if let (Some(window), Some(renderer)) = (&self.window, &self.renderer) {
+            let terminal = self.terminal.lock();
+            let (cell_width, cell_height) = renderer.cell_size();
+
+            // カーソル位置をピクセル座標に変換
+            let x = terminal.cursor.col as f32 * cell_width;
+            let y = terminal.cursor.row as f32 * cell_height;
+
+            let position = PhysicalPosition::new(x as u32, y as u32);
+            let size = PhysicalSize::new(cell_width as u32, cell_height as u32);
+
+            window.set_ime_cursor_area(position, size);
         }
     }
 
@@ -285,6 +440,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 self.handle_key(&event);
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+            }
+            WindowEvent::Ime(ime) => {
+                self.handle_ime(&ime);
             }
             WindowEvent::RedrawRequested => {
                 self.update();

@@ -55,6 +55,10 @@ struct TerminalPerformer<'a> {
 impl<'a> Perform for TerminalPerformer<'a> {
     /// 通常の文字を処理
     fn print(&mut self, c: char) {
+        // †（U+2020）などの特殊文字をスキップ（Claude Code等が送信する場合がある）
+        if c == '\u{2020}' || c == '\u{2021}' {
+            return;
+        }
         self.terminal.input_char(c);
     }
 
