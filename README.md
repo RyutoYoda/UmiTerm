@@ -1,6 +1,6 @@
 # UmiTerm 🌊
-
 水色テーマのRust製GPU加速ターミナルエミュレータ
+<img width="914" height="268" alt="image" src="https://github.com/user-attachments/assets/613fee04-cfa5-432b-aeda-9011585f1d9c" />
 
 ## アーキテクチャ
 
