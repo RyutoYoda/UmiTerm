@@ -3,3 +3,8 @@ Cargo.lock
 *.swp
 *.swo
 .DS_Store
+*.app
+*.zip
+*.icns
+*.iconset
+test.py

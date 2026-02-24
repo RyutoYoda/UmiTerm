@@ -57,7 +57,8 @@ impl Pty {
         });
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        cmd.cwd(std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        cmd.arg("-l"); // ログインシェルとして起動（.bash_profile等を読み込む）
+        cmd.cwd(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
 
         // 環境変数を設定
         cmd.env("TERM", "xterm-256color");
