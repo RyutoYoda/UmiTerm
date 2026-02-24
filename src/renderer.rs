@@ -786,8 +786,257 @@ impl Renderer {
         (cols.max(1), rows.max(1))
     }
 
+    /// 指定したビューポートでのターミナルサイズを計算
+    pub fn calculate_terminal_size_for_viewport(&self, viewport_width: f32, viewport_height: f32) -> (u16, u16) {
+        let cols = (viewport_width / self.cell_width).floor() as u16;
+        let rows = (viewport_height / self.cell_height).floor() as u16;
+        (cols.max(1), rows.max(1))
+    }
+
     /// セルサイズを取得（IMEカーソル位置計算用）
     pub fn cell_size(&self) -> (f32, f32) {
         (self.cell_width, self.cell_height)
+    }
+
+    /// 画面サイズを取得
+    pub fn screen_size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// 複数のペインを描画
+    pub fn render_panes(&mut self, panes: &[(&crate::terminal::Terminal, crate::pane::Rect, bool)]) -> Result<(), wgpu::SurfaceError> {
+        let mut all_instances = Vec::new();
+        let mut all_bg_instances = Vec::new();
+
+        // 各ペインのインスタンスデータを構築
+        for (terminal, rect, is_focused) in panes {
+            let (instances, bg_instances) = self.build_instances_with_viewport(terminal, rect, *is_focused);
+            all_instances.extend(instances);
+            all_bg_instances.extend(bg_instances);
+        }
+
+        // ペイン境界線を追加
+        if panes.len() > 1 {
+            self.add_pane_borders(panes, &mut all_bg_instances);
+        }
+
+        // グリフアトラスを更新
+        if self.glyph_atlas.dirty {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &self.glyph_atlas.pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.glyph_atlas.width),
+                    rows_per_image: Some(self.glyph_atlas.height),
+                },
+                wgpu::Extent3d {
+                    width: self.glyph_atlas.width,
+                    height: self.glyph_atlas.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.glyph_atlas.dirty = false;
+        }
+
+        // インスタンスバッファを更新
+        self.queue
+            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all_instances));
+        self.queue
+            .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(&all_bg_instances));
+
+        // 描画
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // 背景を描画
+            render_pass.set_pipeline(&self.bg_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.bg_instance_buffer.slice(..));
+            render_pass.draw(0..4, 0..all_bg_instances.len() as u32);
+
+            // テキストを描画
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            render_pass.draw(0..4, 0..all_instances.len() as u32);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        Ok(())
+    }
+
+    /// ビューポート付きでインスタンスデータを構築
+    fn build_instances_with_viewport(
+        &mut self,
+        terminal: &Terminal,
+        viewport: &crate::pane::Rect,
+        is_focused: bool,
+    ) -> (Vec<CellInstance>, Vec<CellInstance>) {
+        let grid = terminal.active_grid();
+        let mut instances = Vec::with_capacity(grid.cols * grid.rows);
+        let mut bg_instances = Vec::with_capacity(grid.cols * grid.rows);
+
+        // ビューポートのピクセル座標を計算
+        let vp_x = viewport.x * self.width as f32;
+        let vp_y = viewport.y * self.height as f32;
+
+        // セル座標へのオフセット
+        let col_offset = vp_x / self.cell_width;
+        let row_offset = vp_y / self.cell_height;
+
+        for row in 0..grid.rows {
+            for col in 0..grid.cols {
+                let cell = &grid[(col, row)];
+
+                let position = [col as f32 + col_offset, row as f32 + row_offset];
+
+                // 背景インスタンス
+                bg_instances.push(CellInstance {
+                    position,
+                    fg_color: cell.fg.to_f32_array(),
+                    bg_color: cell.bg.to_f32_array(),
+                    uv_offset: [0.0, 0.0],
+                    uv_size: [0.0, 0.0],
+                    glyph_offset: [0.0, 0.0],
+                    glyph_size: [0.0, 0.0],
+                });
+
+                // 空白以外はグリフを描画
+                if cell.character != ' ' {
+                    if let Some(glyph) = self.glyph_atlas.get_or_insert(
+                        cell.character,
+                        &self.font,
+                        self.fallback_font.as_ref(),
+                        self.font_size,
+                    ) {
+                        instances.push(CellInstance {
+                            position,
+                            fg_color: cell.fg.to_f32_array(),
+                            bg_color: cell.bg.to_f32_array(),
+                            uv_offset: glyph.uv_offset,
+                            uv_size: glyph.uv_size,
+                            glyph_offset: glyph.offset,
+                            glyph_size: glyph.size,
+                        });
+                    }
+                }
+            }
+        }
+
+        // カーソルを追加（フォーカスがあるペインのみ）
+        if is_focused && terminal.cursor.visible {
+            let cursor_char = match terminal.cursor.shape {
+                CursorShape::Block => '█',
+                CursorShape::Underline => '_',
+                CursorShape::Beam => '│',
+            };
+
+            if let Some(glyph) = self.glyph_atlas.get_or_insert(
+                cursor_char,
+                &self.font,
+                self.fallback_font.as_ref(),
+                self.font_size,
+            ) {
+                instances.push(CellInstance {
+                    position: [
+                        terminal.cursor.col as f32 + col_offset,
+                        terminal.cursor.row as f32 + row_offset,
+                    ],
+                    fg_color: Color::EMERALD.to_f32_array(),
+                    bg_color: [0.0, 0.0, 0.0, 0.0],
+                    uv_offset: glyph.uv_offset,
+                    uv_size: glyph.uv_size,
+                    glyph_offset: glyph.offset,
+                    glyph_size: glyph.size,
+                });
+            }
+        }
+
+        (instances, bg_instances)
+    }
+
+    /// ペイン境界線を追加
+    fn add_pane_borders(
+        &self,
+        panes: &[(&crate::terminal::Terminal, crate::pane::Rect, bool)],
+        bg_instances: &mut Vec<CellInstance>,
+    ) {
+        let border_color = Color::rgb(60, 60, 60).to_f32_array();
+
+        for (_terminal, rect, _is_focused) in panes {
+            // 右端に境界線を描画（最右端でない場合）
+            if rect.x + rect.width < 0.99 {
+                let border_x = (rect.x + rect.width) * self.width as f32 / self.cell_width;
+                let start_row = rect.y * self.height as f32 / self.cell_height;
+                let end_row = (rect.y + rect.height) * self.height as f32 / self.cell_height;
+
+                for row in (start_row as usize)..(end_row as usize) {
+                    bg_instances.push(CellInstance {
+                        position: [border_x - 0.1, row as f32],
+                        fg_color: border_color,
+                        bg_color: border_color,
+                        uv_offset: [0.0, 0.0],
+                        uv_size: [0.0, 0.0],
+                        glyph_offset: [0.0, 0.0],
+                        glyph_size: [0.2 * self.cell_width, self.cell_height],
+                    });
+                }
+            }
+
+            // 下端に境界線を描画（最下端でない場合）
+            if rect.y + rect.height < 0.99 {
+                let border_y = (rect.y + rect.height) * self.height as f32 / self.cell_height;
+                let start_col = rect.x * self.width as f32 / self.cell_width;
+                let end_col = (rect.x + rect.width) * self.width as f32 / self.cell_width;
+
+                for col in (start_col as usize)..(end_col as usize) {
+                    bg_instances.push(CellInstance {
+                        position: [col as f32, border_y - 0.1],
+                        fg_color: border_color,
+                        bg_color: border_color,
+                        uv_offset: [0.0, 0.0],
+                        uv_size: [0.0, 0.0],
+                        glyph_offset: [0.0, 0.0],
+                        glyph_size: [self.cell_width, 0.2 * self.cell_height],
+                    });
+                }
+            }
+        }
     }
 }
