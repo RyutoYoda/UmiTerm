@@ -78,10 +78,12 @@ impl<'a> Perform for TerminalPerformer<'a> {
     fn csi_dispatch(
         &mut self,
         params: &Params,
-        _intermediates: &[u8],
+        intermediates: &[u8],
         _ignore: bool,
         action: char,
     ) {
+        // DEC private mode（?がある場合）
+        let is_private = intermediates.contains(&b'?');
         // パラメータを Vec に変換（複数のパラメータに対応）
         let params: Vec<u16> = params
             .iter()
@@ -204,8 +206,8 @@ impl<'a> Perform for TerminalPerformer<'a> {
             // ─────────────────────────────────────────────────────────────────
             // モード設定（DECSET/DECRST）
             // ─────────────────────────────────────────────────────────────────
-            'h' => self.handle_mode(true, &params),
-            'l' => self.handle_mode(false, &params),
+            'h' => self.handle_mode(true, &params, is_private),
+            'l' => self.handle_mode(false, &params, is_private),
 
             // ─────────────────────────────────────────────────────────────────
             // カーソル形状
@@ -429,54 +431,74 @@ impl<'a> TerminalPerformer<'a> {
     }
 
     /// モード設定/解除を処理
-    fn handle_mode(&mut self, enable: bool, params: &[u16]) {
+    fn handle_mode(&mut self, enable: bool, params: &[u16], is_private: bool) {
         for &param in params {
-            match param {
-                // カーソルキーモード（アプリケーション）
-                1 => {
-                    if enable {
-                        self.terminal.mode.insert(TerminalMode::CURSOR_KEYS_APP);
-                    } else {
-                        self.terminal.mode.remove(TerminalMode::CURSOR_KEYS_APP);
+            if is_private {
+                // DEC Private Mode（CSI ? Pm h/l）
+                match param {
+                    // カーソルキーモード（アプリケーション）
+                    1 => {
+                        if enable {
+                            self.terminal.mode.insert(TerminalMode::CURSOR_KEYS_APP);
+                        } else {
+                            self.terminal.mode.remove(TerminalMode::CURSOR_KEYS_APP);
+                        }
+                    }
+                    // カーソル表示
+                    25 => {
+                        self.terminal.cursor.visible = enable;
+                    }
+                    // 自動改行
+                    7 => {
+                        if enable {
+                            self.terminal.mode.insert(TerminalMode::AUTO_WRAP);
+                        } else {
+                            self.terminal.mode.remove(TerminalMode::AUTO_WRAP);
+                        }
+                    }
+                    // 代替スクリーン
+                    1049 | 47 | 1047 => {
+                        if enable {
+                            self.terminal.enter_alt_screen();
+                        } else {
+                            self.terminal.exit_alt_screen();
+                        }
+                    }
+                    // ブラケットペースト
+                    2004 => {
+                        if enable {
+                            self.terminal.mode.insert(TerminalMode::BRACKETED_PASTE);
+                        } else {
+                            self.terminal.mode.remove(TerminalMode::BRACKETED_PASTE);
+                        }
+                    }
+                    // マウストラッキング
+                    1000 | 1002 | 1003 | 1006 | 1015 => {
+                        if enable {
+                            self.terminal.mode.insert(TerminalMode::MOUSE_TRACKING);
+                        } else {
+                            self.terminal.mode.remove(TerminalMode::MOUSE_TRACKING);
+                        }
+                    }
+                    _ => {
+                        log::debug!("未対応のDEC private mode: {}", param);
                     }
                 }
-                // カーソル表示
-                25 => {
-                    self.terminal.cursor.visible = enable;
-                }
-                // 自動改行
-                7 => {
-                    if enable {
-                        self.terminal.mode.insert(TerminalMode::AUTO_WRAP);
-                    } else {
-                        self.terminal.mode.remove(TerminalMode::AUTO_WRAP);
+            } else {
+                // Standard Mode（CSI Pm h/l）
+                match param {
+                    4 => {
+                        // 挿入モード
+                        if enable {
+                            self.terminal.mode.insert(TerminalMode::INSERT);
+                        } else {
+                            self.terminal.mode.remove(TerminalMode::INSERT);
+                        }
+                    }
+                    _ => {
+                        log::debug!("未対応のstandard mode: {}", param);
                     }
                 }
-                // 代替スクリーン
-                1049 | 47 | 1047 => {
-                    if enable {
-                        self.terminal.enter_alt_screen();
-                    } else {
-                        self.terminal.exit_alt_screen();
-                    }
-                }
-                // ブラケットペースト
-                2004 => {
-                    if enable {
-                        self.terminal.mode.insert(TerminalMode::BRACKETED_PASTE);
-                    } else {
-                        self.terminal.mode.remove(TerminalMode::BRACKETED_PASTE);
-                    }
-                }
-                // マウストラッキング
-                1000 | 1002 | 1003 | 1006 | 1015 => {
-                    if enable {
-                        self.terminal.mode.insert(TerminalMode::MOUSE_TRACKING);
-                    } else {
-                        self.terminal.mode.remove(TerminalMode::MOUSE_TRACKING);
-                    }
-                }
-                _ => {}
             }
         }
     }

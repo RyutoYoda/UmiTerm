@@ -188,10 +188,18 @@ impl App {
         Ok(())
     }
 
-    /// 起動バナーを表示
+    /// 起動バナーを表示し、カーソルを下部に移動
     fn show_startup_banner(&mut self) {
         let mut terminal = self.terminal.lock();
         self.parser.process(&mut terminal, STARTUP_BANNER.as_bytes());
+
+        // カーソルを画面下部に移動（空行を挿入）
+        let rows = terminal.active_grid().rows;
+        let current_row = terminal.cursor.row;
+        let lines_to_add = rows.saturating_sub(current_row + 3);
+        for _ in 0..lines_to_add {
+            self.parser.process(&mut terminal, b"\r\n");
+        }
     }
 
     /// フレームを更新
