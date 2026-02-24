@@ -6,6 +6,19 @@ Rust製GPU加速ターミナルエミュレータ
 
 <img width="914" height="268" alt="image" src="https://github.com/user-attachments/assets/613fee04-cfa5-432b-aeda-9011585f1d9c" />
 
+## インストール
+
+### Homebrew（推奨）
+```bash
+brew tap ryutoyoda/tap
+brew install --cask umiterm
+```
+
+### 手動インストール
+1. [Releases](https://github.com/RyutoYoda/UmiTerm/releases) から `UmiTerm-v*.zip` をダウンロード
+2. 解凍して `UmiTerm.app` を `/Applications` にドラッグ
+3. 初回起動時は右クリック →「開く」を選択
+
 ## アーキテクチャ
 
 ```mermaid
