@@ -102,8 +102,8 @@ const DEFAULT_FONT_SIZE: f32 = 22.0;
 /// グリフアトラスの初期サイズ（メモリ最適化: 512x512 = 256KB）
 const ATLAS_SIZE: u32 = 512;
 
-/// 最大インスタンス数（Full HD 80x40 = 3200、余裕を見て8000）
-const MAX_INSTANCES: usize = 8000;
+/// 最大インスタンス数（4K対応: 200x80 = 16000）
+const MAX_INSTANCES: usize = 20000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 頂点データ（GPU に送るデータ）
@@ -636,11 +636,21 @@ impl Renderer {
             self.glyph_atlas.dirty = false;
         }
 
-        // インスタンスバッファを更新
+        // インスタンスバッファを更新（オーバーフロー防止）
+        let instances = if instances.len() > MAX_INSTANCES {
+            &instances[..MAX_INSTANCES]
+        } else {
+            &instances[..]
+        };
+        let bg_instances = if bg_instances.len() > MAX_INSTANCES {
+            &bg_instances[..MAX_INSTANCES]
+        } else {
+            &bg_instances[..]
+        };
         self.queue
-            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
         self.queue
-            .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(&bg_instances));
+            .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(bg_instances));
 
         // 描画（内部のサーフェスを使用）
         let output = self.surface.get_current_texture()?;
@@ -871,11 +881,21 @@ impl Renderer {
             self.glyph_atlas.dirty = false;
         }
 
-        // インスタンスバッファを更新
+        // インスタンスバッファを更新（オーバーフロー防止）
+        let all_instances = if all_instances.len() > MAX_INSTANCES {
+            &all_instances[..MAX_INSTANCES]
+        } else {
+            &all_instances[..]
+        };
+        let all_bg_instances = if all_bg_instances.len() > MAX_INSTANCES {
+            &all_bg_instances[..MAX_INSTANCES]
+        } else {
+            &all_bg_instances[..]
+        };
         self.queue
-            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&all_instances));
+            .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(all_instances));
         self.queue
-            .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(&all_bg_instances));
+            .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(all_bg_instances));
 
         // 描画
         let output = self.surface.get_current_texture()?;
