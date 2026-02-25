@@ -1215,17 +1215,29 @@ impl Renderer {
         let col_offset = vp_x / self.cell_width;
         let row_offset = vp_y / self.cell_height;
 
+        // 選択ハイライト色（明るい水色背景）
+        let selection_bg = [0.2, 0.5, 0.7, 1.0]; // 選択範囲の背景色
+        let selection_fg = [1.0, 1.0, 1.0, 1.0]; // 選択範囲の前景色
+
         for row in 0..grid.rows {
             for col in 0..grid.cols {
                 let cell = &grid[(col, row)];
+                let is_selected = terminal.selection.contains(col, row);
 
                 let position = [col as f32 + col_offset, row as f32 + row_offset];
+
+                // 選択されているセルは背景色を変更
+                let (fg, bg) = if is_selected {
+                    (selection_fg, selection_bg)
+                } else {
+                    (cell.fg.to_f32_array(), cell.bg.to_f32_array())
+                };
 
                 // 背景インスタンス
                 bg_instances.push(CellInstance {
                     position,
-                    fg_color: cell.fg.to_f32_array(),
-                    bg_color: cell.bg.to_f32_array(),
+                    fg_color: fg,
+                    bg_color: bg,
                     uv_offset: [0.0, 0.0],
                     uv_size: [0.0, 0.0],
                     glyph_offset: [0.0, 0.0],
@@ -1244,8 +1256,8 @@ impl Renderer {
                     ) {
                         instances.push(CellInstance {
                             position,
-                            fg_color: cell.fg.to_f32_array(),
-                            bg_color: cell.bg.to_f32_array(),
+                            fg_color: fg,
+                            bg_color: bg,
                             uv_offset: glyph.uv_offset,
                             uv_size: glyph.uv_size,
                             glyph_offset: glyph.offset,

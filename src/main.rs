@@ -113,8 +113,12 @@ struct WindowState {
     modifiers: Modifiers,
     /// マウス位置（正規化座標 0.0-1.0）
     mouse_pos: (f32, f32),
+    /// マウス位置（ピクセル座標）
+    mouse_pixel_pos: (f64, f64),
     /// ドラッグ中の境界線情報
     dragging_border: Option<BorderHit>,
+    /// テキスト選択ドラッグ中
+    selecting_text: bool,
     /// ファイルエクスプローラー
     explorer: Explorer,
     /// エクスプローラーにフォーカス中か
@@ -371,6 +375,7 @@ impl WindowState {
                     "d" if shift => return WindowCommand::SplitVertical,   // Cmd+Shift+D: 横分割
                     "d" => return WindowCommand::SplitHorizontal,          // Cmd+D: 縦分割
                     "w" => return WindowCommand::ClosePane,                // Cmd+W: ペインを閉じる
+                    "c" => return WindowCommand::Copy,                     // Cmd+C: コピー
                     "v" => return WindowCommand::Paste,                    // Cmd+V: ペースト
                     "b" => return WindowCommand::ToggleExplorer,           // Cmd+B: エクスプローラー
                     "]" => return WindowCommand::FocusNextPane,            // Cmd+]: 次のペイン
@@ -544,14 +549,48 @@ impl WindowState {
         }
     }
 
+    /// マウス位置をターミナルセル座標に変換
+    fn mouse_to_cell(&self, x: f64, y: f64, pane_rect: &Rect) -> (usize, usize) {
+        let (screen_width, screen_height) = self.renderer.screen_size();
+        let (cell_width, cell_height) = self.renderer.cell_size();
+
+        // ペインの開始位置（ピクセル）
+        let pane_x = pane_rect.x * screen_width as f32;
+        let pane_y = pane_rect.y * screen_height as f32;
+
+        // ペイン内の相対座標
+        let rel_x = (x as f32 - pane_x).max(0.0);
+        let rel_y = (y as f32 - pane_y).max(0.0);
+
+        // セル座標に変換
+        let col = (rel_x / cell_width) as usize;
+        let row = (rel_y / cell_height) as usize;
+
+        (col, row)
+    }
+
     /// マウス移動を処理
     fn handle_cursor_moved(&mut self, x: f64, y: f64) {
         let (width, height) = self.renderer.screen_size();
 
-        // 正規化座標に変換
+        // 座標を保存
+        self.mouse_pixel_pos = (x, y);
         let norm_x = (x as f32) / (width as f32);
         let norm_y = (y as f32) / (height as f32);
         self.mouse_pos = (norm_x, norm_y);
+
+        // テキスト選択ドラッグ中
+        if self.selecting_text {
+            let rects = self.layout.calculate_rects(Rect::full());
+            if let Some((_, rect)) = rects.iter().find(|(id, _)| *id == self.focused_pane) {
+                let (col, row) = self.mouse_to_cell(x, y, rect);
+                if let Some(pane) = self.panes.get(&self.focused_pane) {
+                    let mut terminal = pane.terminal.lock();
+                    terminal.selection.extend_to(col, row);
+                }
+            }
+            return;
+        }
 
         // ドラッグ中なら境界線を移動
         if let Some(ref border) = self.dragging_border {
@@ -588,6 +627,7 @@ impl WindowState {
         }
 
         let (norm_x, norm_y) = self.mouse_pos;
+        let (x, y) = self.mouse_pixel_pos;
 
         match state {
             ElementState::Pressed => {
@@ -597,15 +637,38 @@ impl WindowState {
                     return;
                 }
 
-                // ペイン上ならフォーカス切り替え
+                // ペイン上ならフォーカス切り替えと選択開始
                 if let Some(pane_id) = self.layout.pane_at(norm_x, norm_y, Rect::full()) {
                     if pane_id != self.focused_pane {
+                        // 前のペインの選択をクリア
+                        if let Some(prev_pane) = self.panes.get(&self.focused_pane) {
+                            prev_pane.terminal.lock().selection.clear();
+                        }
                         self.focused_pane = pane_id;
                         log::info!("クリックでフォーカス切り替え: {:?}", pane_id);
+                    }
+
+                    // テキスト選択を開始
+                    let rects = self.layout.calculate_rects(Rect::full());
+                    if let Some((_, rect)) = rects.iter().find(|(id, _)| *id == pane_id) {
+                        let (col, row) = self.mouse_to_cell(x, y, rect);
+                        if let Some(pane) = self.panes.get(&pane_id) {
+                            let mut terminal = pane.terminal.lock();
+                            terminal.selection.start_at(col, row);
+                        }
+                        self.selecting_text = true;
                     }
                 }
             }
             ElementState::Released => {
+                // テキスト選択終了
+                if self.selecting_text {
+                    if let Some(pane) = self.panes.get(&self.focused_pane) {
+                        pane.terminal.lock().selection.finish();
+                    }
+                    self.selecting_text = false;
+                }
+
                 // ドラッグ終了
                 if self.dragging_border.is_some() {
                     self.dragging_border = None;
@@ -641,6 +704,7 @@ enum WindowCommand {
     SplitVertical,
     FocusNextPane,
     FocusPrevPane,
+    Copy,
     Paste,
     ToggleExplorer,
     ExplorerUp,
@@ -733,7 +797,9 @@ impl App {
             ime_active: false,
             modifiers: Modifiers::default(),
             mouse_pos: (0.0, 0.0),
+            mouse_pixel_pos: (0.0, 0.0),
             dragging_border: None,
+            selecting_text: false,
             explorer,
             explorer_focused: false,
         };
@@ -857,6 +923,27 @@ impl ApplicationHandler for App {
             WindowCommand::FocusPrevPane => {
                 if let Some(state) = self.windows.get_mut(&window_id) {
                     state.focus_prev_pane();
+                }
+            }
+            WindowCommand::Copy => {
+                // 選択テキストをクリップボードにコピー
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    if let Some(pane) = state.panes.get(&state.focused_pane) {
+                        let terminal = pane.terminal.lock();
+                        if let Some(text) = terminal.get_selected_text() {
+                            drop(terminal); // クリップボード操作前にロックを解除
+                            if let Ok(mut clipboard) = Clipboard::new() {
+                                let _ = clipboard.set_text(&text);
+                                log::info!("Copied: {:?}", text);
+                            }
+                        } else {
+                            drop(terminal);
+                            // 選択がない場合は、Ctrl+Cとして送信
+                            if let Some(pane) = state.panes.get(&state.focused_pane) {
+                                let _ = pane.pty.write(&[0x03]); // Ctrl+C
+                            }
+                        }
+                    }
                 }
             }
             WindowCommand::Paste => {

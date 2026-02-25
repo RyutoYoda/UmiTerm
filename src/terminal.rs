@@ -48,6 +48,91 @@ pub enum CursorShape {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// テキスト選択
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// テキスト選択の状態
+#[derive(Clone, Debug, Default)]
+pub struct Selection {
+    /// 選択開始位置（アンカー）
+    pub start: Option<(usize, usize)>, // (col, row)
+    /// 選択終了位置
+    pub end: Option<(usize, usize)>,   // (col, row)
+    /// 選択中かどうか
+    pub active: bool,
+}
+
+impl Selection {
+    /// 選択をクリア
+    pub fn clear(&mut self) {
+        self.start = None;
+        self.end = None;
+        self.active = false;
+    }
+
+    /// 選択を開始
+    pub fn start_at(&mut self, col: usize, row: usize) {
+        self.start = Some((col, row));
+        self.end = Some((col, row));
+        self.active = true;
+    }
+
+    /// 選択を拡張
+    pub fn extend_to(&mut self, col: usize, row: usize) {
+        if self.active {
+            self.end = Some((col, row));
+        }
+    }
+
+    /// 選択を終了
+    pub fn finish(&mut self) {
+        self.active = false;
+    }
+
+    /// 指定位置が選択範囲内かどうか
+    pub fn contains(&self, col: usize, row: usize) -> bool {
+        let (start, end) = match (self.start, self.end) {
+            (Some(s), Some(e)) => {
+                // 開始と終了を正規化（行順、同じ行なら列順）
+                if s.1 < e.1 || (s.1 == e.1 && s.0 <= e.0) {
+                    (s, e)
+                } else {
+                    (e, s)
+                }
+            }
+            _ => return false,
+        };
+
+        // 行が範囲内かチェック
+        if row < start.1 || row > end.1 {
+            return false;
+        }
+
+        // 単一行選択
+        if start.1 == end.1 {
+            return col >= start.0 && col <= end.0;
+        }
+
+        // 複数行選択
+        if row == start.1 {
+            // 開始行: 開始列以降
+            col >= start.0
+        } else if row == end.1 {
+            // 終了行: 終了列以前
+            col <= end.0
+        } else {
+            // 中間行: 全列
+            true
+        }
+    }
+
+    /// 選択範囲があるかどうか
+    pub fn has_selection(&self) -> bool {
+        self.start.is_some() && self.end.is_some()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ターミナルモード
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -100,6 +185,8 @@ pub struct Terminal {
     pub title: String,
     /// 現在の作業ディレクトリ（OSC 7から取得）
     pub cwd: PathBuf,
+    /// テキスト選択状態
+    pub selection: Selection,
 }
 
 /// 現在のセルスタイル（新しい文字に適用される）
@@ -137,6 +224,7 @@ impl Terminal {
             cwd: std::env::var("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
+            selection: Selection::default(),
         }
     }
 
@@ -415,8 +503,65 @@ impl Terminal {
         if self.mode.contains(TerminalMode::ALT_SCREEN) {
             self.mode.remove(TerminalMode::ALT_SCREEN);
             self.restore_cursor();
+            // スクロール領域を全画面にリセット
+            self.scroll_top = 0;
+            self.scroll_bottom = self.grid.rows.saturating_sub(1);
             // メイン画面を再描画するためにダーティにする
             self.grid.mark_all_dirty();
+        }
+    }
+
+    /// 選択されたテキストを取得
+    pub fn get_selected_text(&self) -> Option<String> {
+        if !self.selection.has_selection() {
+            return None;
+        }
+
+        let (start, end) = match (self.selection.start, self.selection.end) {
+            (Some(s), Some(e)) => {
+                // 開始と終了を正規化
+                if s.1 < e.1 || (s.1 == e.1 && s.0 <= e.0) {
+                    (s, e)
+                } else {
+                    (e, s)
+                }
+            }
+            _ => return None,
+        };
+
+        let grid = self.active_grid();
+        let mut text = String::new();
+
+        for row in start.1..=end.1 {
+            if row >= grid.rows {
+                break;
+            }
+
+            let col_start = if row == start.1 { start.0 } else { 0 };
+            let col_end = if row == end.1 { end.0 } else { grid.cols.saturating_sub(1) };
+
+            for col in col_start..=col_end {
+                if col >= grid.cols {
+                    break;
+                }
+                let cell = &grid[(col, row)];
+                if cell.character != '\0' {
+                    text.push(cell.character);
+                }
+            }
+
+            // 行末で改行を追加（最後の行以外）
+            if row < end.1 {
+                text.push('\n');
+            }
+        }
+
+        // 末尾の空白を削除
+        let trimmed = text.trim_end().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
         }
     }
 
