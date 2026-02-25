@@ -913,8 +913,16 @@ impl ApplicationHandler for App {
                             // ディレクトリは展開/折りたたみ
                             state.explorer.toggle_expand();
                         } else {
-                            // ファイルはエディタで開く（$EDITOR > vim）
-                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+                            // ファイルはエディタで開く（$EDITOR > nvim > vim）
+                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
+                                // nvimがあればそちらを優先
+                                if std::process::Command::new("which").arg("nvim").output()
+                                    .map(|o| o.status.success()).unwrap_or(false) {
+                                    "nvim".to_string()
+                                } else {
+                                    "vim".to_string()
+                                }
+                            });
                             let open_cmd = format!("{} \"{}\"\n", editor, entry.path.display());
                             if let Some(pane) = state.panes.get_mut(&state.focused_pane) {
                                 let _ = pane.pty.write(open_cmd.as_bytes());

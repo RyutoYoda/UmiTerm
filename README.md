@@ -182,7 +182,7 @@ UMITERM_FONT=/path/to/font.ttf cargo run --release
 | `Esc` | 閉じる |
 
 ※ エクスプローラーはシェルの現在の作業ディレクトリを表示します
-※ ファイルは `$EDITOR`（未設定なら `vim`）で開きます
+※ ファイルは `$EDITOR` → `nvim` → `vim` の優先順で開きます
 
 ### マウス操作
 
