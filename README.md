@@ -3,8 +3,7 @@
 <img src="https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white" /> <img src="https://img.shields.io/badge/wgpu-4285F4?style=flat&logo=webgpu&logoColor=white" /> <img src="https://img.shields.io/badge/macOS-000000?style=flat&logo=apple&logoColor=white" />
 
 Rust製GPU加速ターミナルエミュレータ
-
-<img width="914" height="268" alt="image" src="https://github.com/user-attachments/assets/613fee04-cfa5-432b-aeda-9011585f1d9c" />
+<img width="731" height="198" alt="スクリーンショット 2026-02-25 11 20 13" src="https://github.com/user-attachments/assets/35f47129-aade-480e-900e-709d3ac9dd61" />
 
 ## インストール
 
