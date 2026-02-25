@@ -2,6 +2,7 @@
 //!
 //! カーソル位置、スクロール領域、モードなどの状態を管理
 
+use std::path::PathBuf;
 use unicode_width::UnicodeWidthChar;
 
 use crate::grid::{Cell, CellFlags, Color, Grid};
@@ -97,6 +98,8 @@ pub struct Terminal {
     pub tabs: Vec<usize>,
     /// ターミナルタイトル
     pub title: String,
+    /// 現在の作業ディレクトリ（OSC 7から取得）
+    pub cwd: PathBuf,
 }
 
 /// 現在のセルスタイル（新しい文字に適用される）
@@ -131,6 +134,9 @@ impl Terminal {
             scroll_bottom: rows - 1,
             tabs,
             title: String::from("BlazeTerm"),
+            cwd: std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
         }
     }
 

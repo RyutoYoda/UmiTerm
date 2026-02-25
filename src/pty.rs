@@ -26,6 +26,8 @@ pub struct Pty {
     input_tx: Sender<Vec<u8>>,
     /// 現在のサイズ
     size: PtySize,
+    /// シェルプロセスのPID
+    child_pid: Option<u32>,
 }
 
 impl Pty {
@@ -65,10 +67,13 @@ impl Pty {
         cmd.env("COLORTERM", "truecolor");
 
         // 子プロセスを起動
-        let _child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .context("シェルの起動に失敗")?;
+
+        // シェルプロセスのPIDを取得
+        let child_pid = child.process_id();
 
         // マスターPTYのリーダーとライターを取得
         let master = pair.master;
@@ -127,6 +132,7 @@ impl Pty {
             output_rx,
             input_tx,
             size,
+            child_pid,
         })
     }
 
@@ -173,6 +179,36 @@ impl Pty {
     /// 現在のサイズを取得
     pub fn size(&self) -> (u16, u16) {
         (self.size.cols, self.size.rows)
+    }
+
+    /// シェルの現在の作業ディレクトリを取得（macOS用）
+    /// lsofコマンドを使用してPIDからcwdを取得
+    pub fn get_cwd(&self) -> Option<std::path::PathBuf> {
+        let pid = self.child_pid?;
+
+        // lsofでシェルプロセスのcwdを取得
+        let output = std::process::Command::new("lsof")
+            .args(["-p", &pid.to_string(), "-Fn"])
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // cwdの行を探す（"n"で始まり、"cwd"を含む行の次の行がパス）
+        // lsof出力形式: "fcwd\nn/path/to/cwd\n"
+        let mut found_cwd = false;
+        for line in stdout.lines() {
+            if line == "fcwd" {
+                found_cwd = true;
+                continue;
+            }
+            if found_cwd && line.starts_with('n') {
+                let path = &line[1..]; // "n"を除去
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
+
+        None
     }
 }
 

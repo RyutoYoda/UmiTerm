@@ -15,6 +15,7 @@ use bytemuck::{Pod, Zeroable};
 use fontdue::{Font, FontSettings};
 use wgpu::util::DeviceExt;
 
+use crate::explorer::{EntryKind, Explorer};
 use crate::grid::Color;
 use crate::terminal::{CursorShape, Terminal};
 
@@ -102,8 +103,8 @@ const DEFAULT_FONT_SIZE: f32 = 22.0;
 /// グリフアトラスの初期サイズ（メモリ最適化: 512x512 = 256KB）
 const ATLAS_SIZE: u32 = 512;
 
-/// 最大インスタンス数（4K対応: 200x80 = 16000）
-const MAX_INSTANCES: usize = 20000;
+/// 最大インスタンス数（メモリ最適化、オーバーフロー保護あり）
+const MAX_INSTANCES: usize = 8000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 頂点データ（GPU に送るデータ）
@@ -703,6 +704,148 @@ impl Renderer {
         Ok(())
     }
 
+    /// エクスプローラーオーバーレイを描画（中央ポップアップ）
+    pub fn render_explorer_overlay(
+        &mut self,
+        explorer: &Explorer,
+        screen_cols: usize,
+        screen_rows: usize,
+    ) -> (Vec<CellInstance>, Vec<CellInstance>) {
+        let mut instances = Vec::new();
+        let mut bg_instances = Vec::new();
+
+        // ポップアップのサイズと位置
+        let popup_width = 50.min(screen_cols.saturating_sub(4));
+        let popup_height = 20.min(screen_rows.saturating_sub(4));
+        let start_col = (screen_cols.saturating_sub(popup_width)) / 2;
+        let start_row = (screen_rows.saturating_sub(popup_height)) / 2;
+
+        // 背景（半透明風の暗い色）
+        let bg_color = Color::rgb(25, 30, 40).to_f32_array();
+        let header_bg = Color::rgb(40, 50, 65).to_f32_array();
+        let selected_bg = Color::rgb(180, 60, 60).to_f32_array();  // 赤で選択行を強調
+        let border_color = Color::EMERALD.to_f32_array();
+
+        // ヘッダー背景
+        let header = " EXPLORER (↑↓:move Enter:open g:cd Esc:close)";
+        for col in 0..popup_width {
+            bg_instances.push(CellInstance {
+                position: [(start_col + col) as f32, start_row as f32],
+                fg_color: [0.0, 0.0, 0.0, 0.0],
+                bg_color: header_bg,
+                uv_offset: [0.0, 0.0],
+                uv_size: [0.0, 0.0],
+                glyph_offset: [0.0, 0.0],
+                glyph_size: [0.0, 0.0],
+            });
+        }
+        // ヘッダーテキスト
+        for (i, c) in header.chars().enumerate() {
+            if i >= popup_width { break; }
+            if c != ' ' {
+                self.ensure_fallback_font(c);
+                if let Some(glyph) = self.glyph_atlas.get_or_insert(
+                    c,
+                    &self.font,
+                    self.fallback_font.as_ref(),
+                    self.font_size,
+                ) {
+                    instances.push(CellInstance {
+                        position: [(start_col + i) as f32, start_row as f32],
+                        fg_color: border_color,
+                        bg_color: [0.0, 0.0, 0.0, 0.0],
+                        uv_offset: glyph.uv_offset,
+                        uv_size: glyph.uv_size,
+                        glyph_offset: glyph.offset,
+                        glyph_size: glyph.size,
+                    });
+                }
+            }
+        }
+
+        // エントリを描画
+        let visible_rows = popup_height - 1;
+        let start = explorer.scroll_offset;
+        let end = (start + visible_rows).min(explorer.entries.len());
+
+        for (idx, entry) in explorer.entries[start..end].iter().enumerate() {
+            let row = start_row + idx + 1;
+            let is_selected = start + idx == explorer.selected;
+
+            // 背景色
+            let row_bg = if is_selected { selected_bg } else { bg_color };
+
+            // アイコンとファイル名
+            let indent = "  ".repeat(entry.depth);
+            let icon = match entry.kind {
+                EntryKind::Directory => if entry.expanded { "▼ " } else { "▶ " },
+                EntryKind::File => "  ",
+            };
+            let display = format!(" {}{}{}", indent, icon, entry.name);
+
+            let fg_color = match entry.kind {
+                EntryKind::Directory => Color::EMERALD.to_f32_array(),
+                EntryKind::File => [0.85, 0.85, 0.85, 1.0],
+            };
+
+            // 背景を先に描画（bg_instancesに追加）
+            for col in 0..popup_width {
+                let position = [(start_col + col) as f32, row as f32];
+                bg_instances.push(CellInstance {
+                    position,
+                    fg_color: [0.0, 0.0, 0.0, 0.0],
+                    bg_color: row_bg,
+                    uv_offset: [0.0, 0.0],
+                    uv_size: [0.0, 0.0],
+                    glyph_offset: [0.0, 0.0],
+                    glyph_size: [0.0, 0.0],
+                });
+            }
+
+            // テキストを描画
+            for (col, c) in display.chars().enumerate() {
+                if col >= popup_width { break; }
+                if c != ' ' {
+                    self.ensure_fallback_font(c);
+                    if let Some(glyph) = self.glyph_atlas.get_or_insert(
+                        c,
+                        &self.font,
+                        self.fallback_font.as_ref(),
+                        self.font_size,
+                    ) {
+                        instances.push(CellInstance {
+                            position: [(start_col + col) as f32, row as f32],
+                            fg_color,
+                            bg_color: [0.0, 0.0, 0.0, 0.0],
+                            uv_offset: glyph.uv_offset,
+                            uv_size: glyph.uv_size,
+                            glyph_offset: glyph.offset,
+                            glyph_size: glyph.size,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 残りの行を背景で埋める
+        for idx in (end - start)..visible_rows {
+            let row = start_row + idx + 1;
+            for col in 0..popup_width {
+                bg_instances.push(CellInstance {
+                    position: [(start_col + col) as f32, row as f32],
+                    fg_color: [0.0, 0.0, 0.0, 0.0],
+                    bg_color: bg_color,
+                    uv_offset: [0.0, 0.0],
+                    uv_size: [0.0, 0.0],
+                    glyph_offset: [0.0, 0.0],
+                    glyph_size: [0.0, 0.0],
+                });
+            }
+        }
+
+        (instances, bg_instances)
+    }
+
     /// 日本語フォントを遅延読み込み（必要な時のみ）
     fn ensure_fallback_font(&mut self, c: char) {
         // ASCII文字はフォールバック不要
@@ -842,6 +985,14 @@ impl Renderer {
 
     /// 複数のペインを描画
     pub fn render_panes(&mut self, panes: &[(&crate::terminal::Terminal, crate::pane::Rect, bool)]) -> Result<(), wgpu::SurfaceError> {
+        self.render_panes_with_explorer(panes, None)
+    }
+
+    pub fn render_panes_with_explorer(
+        &mut self,
+        panes: &[(&crate::terminal::Terminal, crate::pane::Rect, bool)],
+        explorer: Option<&Explorer>,
+    ) -> Result<(), wgpu::SurfaceError> {
         let mut all_instances = Vec::new();
         let mut all_bg_instances = Vec::new();
 
@@ -855,6 +1006,26 @@ impl Renderer {
         // ペイン境界線を追加
         if panes.len() > 1 {
             self.add_pane_borders(panes, &mut all_bg_instances);
+        }
+
+        // エクスプローラー用の別バッファ（後から別ドローコールで描画）
+        let mut explorer_instances = Vec::new();
+        let mut explorer_bg_instances = Vec::new();
+
+        // エクスプローラーオーバーレイを構築
+        if let Some(exp) = explorer {
+            if exp.visible {
+                // 画面サイズを取得（最初のペインのターミナルから）
+                let (screen_cols, screen_rows) = if let Some((terminal, _, _)) = panes.first() {
+                    let grid = terminal.active_grid();
+                    (grid.cols, grid.rows)
+                } else {
+                    (80, 24)
+                };
+                let (exp_instances, exp_bg) = self.render_explorer_overlay(exp, screen_cols, screen_rows);
+                explorer_bg_instances = exp_bg;
+                explorer_instances = exp_instances;
+            }
         }
 
         // グリフアトラスを更新
@@ -930,16 +1101,61 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // 背景を描画
+            // 1. ターミナル背景を描画
             render_pass.set_pipeline(&self.bg_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.bg_instance_buffer.slice(..));
             render_pass.draw(0..4, 0..all_bg_instances.len() as u32);
 
-            // テキストを描画
+            // 2. ターミナルテキストを描画
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
             render_pass.draw(0..4, 0..all_instances.len() as u32);
+        }
+
+        // 3. エクスプローラーを別のドローコールで上に描画
+        if !explorer_bg_instances.is_empty() {
+            // エクスプローラー用のバッファを更新
+            let explorer_bg = if explorer_bg_instances.len() > MAX_INSTANCES {
+                &explorer_bg_instances[..MAX_INSTANCES]
+            } else {
+                &explorer_bg_instances[..]
+            };
+            let explorer_text = if explorer_instances.len() > MAX_INSTANCES {
+                &explorer_instances[..MAX_INSTANCES]
+            } else {
+                &explorer_instances[..]
+            };
+            self.queue
+                .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(explorer_bg));
+            self.queue
+                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(explorer_text));
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Explorer Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,  // 既存の描画を保持
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            // エクスプローラー背景
+            render_pass.set_pipeline(&self.bg_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.bg_instance_buffer.slice(..));
+            render_pass.draw(0..4, 0..explorer_bg.len() as u32);
+
+            // エクスプローラーテキスト
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+            render_pass.draw(0..4, 0..explorer_text.len() as u32);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

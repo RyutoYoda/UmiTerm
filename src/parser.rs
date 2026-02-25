@@ -3,6 +3,7 @@
 //! vte クレートを使用して高速にパース
 //! CSI, OSC, DCS などのシーケンスを処理
 
+use std::path::PathBuf;
 use vte::{Params, Parser, Perform};
 
 use crate::grid::{CellFlags, Color};
@@ -40,6 +41,54 @@ impl Default for AnsiParser {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// OSC 7のfile:// URLからパスを抽出
+/// 形式: file://hostname/path または file:///path
+fn parse_osc7_path(url: &str) -> Option<PathBuf> {
+    // file:// で始まるかチェック
+    let rest = url.strip_prefix("file://")?;
+
+    // ホスト名をスキップ（最初の/まで）
+    let path_start = if rest.starts_with('/') {
+        // file:///path の形式（ホスト名なし）
+        0
+    } else {
+        // file://hostname/path の形式
+        rest.find('/')?
+    };
+
+    let path_str = &rest[path_start..];
+
+    // URLデコード（%20 -> スペース など）
+    let decoded = url_decode(path_str);
+
+    Some(PathBuf::from(decoded))
+}
+
+/// 簡易的なURLデコード
+fn url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // 次の2文字を16進数として読む
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte as char);
+                    continue;
+                }
+            }
+            result.push('%');
+            result.push_str(&hex);
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -247,6 +296,17 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 if params.len() > 1 {
                     if let Ok(title) = std::str::from_utf8(params[1]) {
                         self.terminal.title = title.to_string();
+                    }
+                }
+            }
+            // 現在の作業ディレクトリ（OSC 7）
+            // 形式: file://hostname/path または file:///path
+            7 => {
+                if params.len() > 1 {
+                    if let Ok(url) = std::str::from_utf8(params[1]) {
+                        if let Some(path) = parse_osc7_path(url) {
+                            self.terminal.cwd = path;
+                        }
                     }
                 }
             }

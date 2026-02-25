@@ -30,6 +30,7 @@
 //! - `Cmd+N`: 新規ウィンドウを開く
 //! - `Cmd+W`: 現在のウィンドウを閉じる
 
+mod explorer;
 mod grid;
 mod pane;
 mod parser;
@@ -42,6 +43,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use arboard::Clipboard;
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
@@ -51,6 +53,7 @@ use winit::{
     window::{CursorIcon, Window, WindowId},
 };
 
+use crate::explorer::Explorer;
 use crate::pane::{BorderHit, Pane, PaneId, PaneLayout, Rect};
 use crate::renderer::Renderer;
 use crate::terminal::Terminal;
@@ -79,7 +82,7 @@ const STARTUP_BANNER: &str = concat!(
     "\x1b[38;2;60;180;170m",  // 少し暗めのシアン
     "  ─────────────────────────────────────────────────────────────\r\n",
     "\x1b[38;2;100;200;190m", // 明るいシアン
-    "  ≋ GPU-Accelerated Terminal Emulator                     v0.1\r\n",
+    "  ~ GPU-Accelerated Terminal Emulator                     v0.2\r\n",
     "\x1b[38;2;60;180;170m",
     "  ─────────────────────────────────────────────────────────────\r\n",
     "\x1b[0m",
@@ -112,6 +115,10 @@ struct WindowState {
     mouse_pos: (f32, f32),
     /// ドラッグ中の境界線情報
     dragging_border: Option<BorderHit>,
+    /// ファイルエクスプローラー
+    explorer: Explorer,
+    /// エクスプローラーにフォーカス中か
+    explorer_focused: bool,
 }
 
 /// 境界線判定の閾値（正規化座標）
@@ -182,7 +189,14 @@ impl WindowState {
             .map(|(t, r, f)| (&**t, *r, *f))
             .collect();
 
-        match self.renderer.render_panes(&terminal_refs) {
+        // エクスプローラーが表示中なら渡す
+        let explorer_ref = if self.explorer.visible {
+            Some(&self.explorer)
+        } else {
+            None
+        };
+
+        match self.renderer.render_panes_with_explorer(&terminal_refs, explorer_ref) {
             Ok(_) => true,
             Err(wgpu::SurfaceError::Lost) => {
                 let size = self.window.inner_size();
@@ -337,6 +351,18 @@ impl WindowState {
         let super_key = self.modifiers.state().super_key();
         let shift = self.modifiers.state().shift_key();
 
+        // エクスプローラーにフォーカス中の場合
+        if self.explorer_focused && self.explorer.visible {
+            match &event.logical_key {
+                Key::Named(NamedKey::ArrowUp) => return WindowCommand::ExplorerUp,
+                Key::Named(NamedKey::ArrowDown) => return WindowCommand::ExplorerDown,
+                Key::Named(NamedKey::Enter) => return WindowCommand::ExplorerEnter,
+                Key::Named(NamedKey::Escape) => return WindowCommand::ToggleExplorer,
+                Key::Character(c) if c == "g" => return WindowCommand::ExplorerGo, // g: cd実行
+                _ => {}
+            }
+        }
+
         // macOSのCmd+キーを処理
         if super_key {
             if let Key::Character(c) = &event.logical_key {
@@ -347,6 +373,8 @@ impl WindowState {
                     "w" => return WindowCommand::ClosePane,                // Cmd+W: ペインを閉じる
                     "]" => return WindowCommand::FocusNextPane,            // Cmd+]: 次のペイン
                     "[" => return WindowCommand::FocusPrevPane,            // Cmd+[: 前のペイン
+                    "v" => return WindowCommand::Paste,                    // Cmd+V: ペースト
+                    "b" => return WindowCommand::ToggleExplorer,           // Cmd+B: エクスプローラー
                     _ => {}
                 }
             }
@@ -613,6 +641,12 @@ enum WindowCommand {
     SplitVertical,
     FocusNextPane,
     FocusPrevPane,
+    Paste,
+    ToggleExplorer,
+    ExplorerUp,
+    ExplorerDown,
+    ExplorerEnter,
+    ExplorerGo,
 }
 
 impl App {
@@ -682,6 +716,12 @@ impl App {
         // IME（日本語入力）を有効化
         window.set_ime_allowed(true);
 
+        // ファイルエクスプローラーを初期化（ホームディレクトリ）
+        let home = std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let explorer = Explorer::new(home);
+
         // WindowStateを作成
         let state = WindowState {
             window,
@@ -694,6 +734,8 @@ impl App {
             modifiers: Modifiers::default(),
             mouse_pos: (0.0, 0.0),
             dragging_border: None,
+            explorer,
+            explorer_focused: false,
         };
 
         // ウィンドウを登録
@@ -809,6 +851,94 @@ impl ApplicationHandler for App {
             WindowCommand::FocusPrevPane => {
                 if let Some(state) = self.windows.get_mut(&window_id) {
                     state.focus_prev_pane();
+                }
+            }
+            WindowCommand::Paste => {
+                // クリップボードからペースト
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            if let Some(pane) = state.panes.get_mut(&state.focused_pane) {
+                                pane.pty.write(text.as_bytes());
+                            }
+                        }
+                    }
+                }
+            }
+            WindowCommand::ToggleExplorer => {
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    // 表示する前に、シェルの現在の作業ディレクトリを取得
+                    if !state.explorer.visible {
+                        if let Some(pane) = state.panes.get(&state.focused_pane) {
+                            // PTYからシェルのcwdを直接取得（lsof使用）
+                            if let Some(cwd) = pane.pty.get_cwd() {
+                                if cwd.exists() {
+                                    state.explorer.set_root(cwd.clone());
+                                    log::info!("Explorer root set to shell cwd: {:?}", cwd);
+                                }
+                            } else {
+                                // フォールバック: ターミナルのcwd（OSC 7から）
+                                let terminal = pane.terminal.lock();
+                                let cwd = terminal.cwd.clone();
+                                drop(terminal);
+                                if cwd.exists() {
+                                    state.explorer.set_root(cwd.clone());
+                                    log::info!("Explorer root set to terminal cwd: {:?}", cwd);
+                                }
+                            }
+                        }
+                    }
+                    state.explorer.toggle();
+                    state.explorer_focused = state.explorer.visible;
+                    log::info!("Explorer toggled: visible={}, entries={}", state.explorer.visible, state.explorer.entries.len());
+                    state.window.request_redraw();
+                }
+            }
+            WindowCommand::ExplorerUp => {
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    state.explorer.move_up();
+                    state.window.request_redraw();
+                }
+            }
+            WindowCommand::ExplorerDown => {
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    state.explorer.move_down();
+                    state.window.request_redraw();
+                }
+            }
+            WindowCommand::ExplorerEnter => {
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    if let Some(entry) = state.explorer.selected_entry().cloned() {
+                        if entry.is_dir() {
+                            // ディレクトリは展開/折りたたみのみ
+                            state.explorer.toggle_expand();
+                        } else {
+                            // ファイルはcdして閉じる
+                            if let Some(parent) = entry.path.parent() {
+                                let cd_cmd = format!("cd \"{}\"\n", parent.display());
+                                if let Some(pane) = state.panes.get_mut(&state.focused_pane) {
+                                    let _ = pane.pty.write(cd_cmd.as_bytes());
+                                }
+                            }
+                            state.explorer.visible = false;
+                            state.explorer_focused = false;
+                        }
+                    }
+                    state.window.request_redraw();
+                }
+            }
+            WindowCommand::ExplorerGo => {
+                // 選択中のディレクトリにcdして閉じる
+                if let Some(state) = self.windows.get_mut(&window_id) {
+                    if let Some(path) = state.explorer.get_cd_path() {
+                        let cd_cmd = format!("cd \"{}\"\n", path.display());
+                        if let Some(pane) = state.panes.get_mut(&state.focused_pane) {
+                            let _ = pane.pty.write(cd_cmd.as_bytes());
+                        }
+                    }
+                    state.explorer.visible = false;
+                    state.explorer_focused = false;
+                    state.window.request_redraw();
                 }
             }
             WindowCommand::None => {}

@@ -32,6 +32,8 @@ bytemuck = { version = "1.21", features = ["derive"] }
 # ビットフラグ
 bitflags = "2.6"
 unicode-width = "0.2.2"
+# クリップボード操作
+arboard = "3.4"
 
 [profile.release]
 # 最大限の最適化
