@@ -3,6 +3,9 @@
 <img src="https://img.shields.io/badge/Rust-000000?style=flat&logo=rust&logoColor=white" /> <img src="https://img.shields.io/badge/wgpu-4285F4?style=flat&logo=webgpu&logoColor=white" /> <img src="https://img.shields.io/badge/macOS-000000?style=flat&logo=apple&logoColor=white" />
 
 Rust製GPU加速ターミナルエミュレータ
+
+**[ベンチマーク結果](BENCHMARK.md)** - Alacrittyと同クラスの性能、バイナリサイズ1/3
+
 <img width="731" height="198" alt="スクリーンショット 2026-02-25 11 20 13" src="https://github.com/user-attachments/assets/35f47129-aade-480e-900e-709d3ac9dd61" />
 
 ## インストール
