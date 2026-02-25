@@ -4,8 +4,6 @@
 
 Rust製GPU加速ターミナルエミュレータ
 
-**[ベンチマーク結果](BENCHMARK.md)** - Alacrittyと同クラスの性能、バイナリサイズ1/3
-
 <img width="731" height="198" alt="スクリーンショット 2026-02-25 11 20 13" src="https://github.com/user-attachments/assets/35f47129-aade-480e-900e-709d3ac9dd61" />
 
 ## インストール
@@ -130,14 +128,18 @@ sequenceDiagram
 ## ビルド・実行
 
 ```bash
-# 開発版
+# 開発モードで実行
 cargo run
 
-# リリース版（最適化済み）
+# 最適化ビルドで実行（高速）
 cargo run --release
 
+# リリースビルド
+cargo build --release
+# → target/release/umiterm
+
 # カスタムフォント
-UMITERM_FONT=/path/to/font.ttf cargo run --release
+UMITERM_FONT=/path/to/font.ttf cargo run
 ```
 
 ## 依存クレート
