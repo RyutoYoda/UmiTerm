@@ -910,15 +910,14 @@ impl ApplicationHandler for App {
                 if let Some(state) = self.windows.get_mut(&window_id) {
                     if let Some(entry) = state.explorer.selected_entry().cloned() {
                         if entry.is_dir() {
-                            // ディレクトリは展開/折りたたみのみ
+                            // ディレクトリは展開/折りたたみ
                             state.explorer.toggle_expand();
                         } else {
-                            // ファイルはcdして閉じる
-                            if let Some(parent) = entry.path.parent() {
-                                let cd_cmd = format!("cd \"{}\"\n", parent.display());
-                                if let Some(pane) = state.panes.get_mut(&state.focused_pane) {
-                                    let _ = pane.pty.write(cd_cmd.as_bytes());
-                                }
+                            // ファイルはエディタで開く（$EDITOR > vim）
+                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+                            let open_cmd = format!("{} \"{}\"\n", editor, entry.path.display());
+                            if let Some(pane) = state.panes.get_mut(&state.focused_pane) {
+                                let _ = pane.pty.write(open_cmd.as_bytes());
                             }
                             state.explorer.visible = false;
                             state.explorer_focused = false;
