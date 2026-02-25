@@ -99,8 +99,11 @@ fn load_japanese_font() -> Option<Font> {
 /// デフォルトのフォントサイズ（ピクセル）
 const DEFAULT_FONT_SIZE: f32 = 22.0;
 
-/// グリフアトラスの初期サイズ
-const ATLAS_SIZE: u32 = 1024;
+/// グリフアトラスの初期サイズ（メモリ最適化: 512x512 = 256KB）
+const ATLAS_SIZE: u32 = 512;
+
+/// 最大インスタンス数（Full HD 80x40 = 3200、余裕を見て8000）
+const MAX_INSTANCES: usize = 8000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 頂点データ（GPU に送るデータ）
@@ -301,8 +304,10 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     /// フォント
     font: Font,
-    /// フォールバックフォント（日本語等）
+    /// フォールバックフォント（日本語等）- 遅延読み込み
     fallback_font: Option<Font>,
+    /// フォールバックフォント読み込み試行済みフラグ
+    fallback_font_tried: bool,
     /// フォントサイズ
     font_size: f32,
     /// セル幅
@@ -358,8 +363,9 @@ impl Renderer {
 
         // フォントをロード（システムフォントから動的に読み込み）
         let font = load_system_font()?;
-        // 日本語フォールバックフォントを読み込み
-        let fallback_font = load_japanese_font();
+        // 日本語フォールバックフォントは遅延読み込み（起動高速化）
+        let fallback_font = None;
+        let fallback_font_tried = false;
 
         let font_size = DEFAULT_FONT_SIZE;
 
@@ -560,19 +566,17 @@ impl Renderer {
             cache: None,
         });
 
-        // インスタンスバッファ（4K解像度対応: 最大50000セル分）
-        // 4K (3840x2160) でセルサイズ 10x20 の場合: 400x100 = 40000 セル
-        let max_instances = 50000;
+        // インスタンスバッファ（メモリ最適化: 8000セル = 約576KB × 2）
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Instance Buffer"),
-            size: (max_instances * std::mem::size_of::<CellInstance>()) as u64,
+            size: (MAX_INSTANCES * std::mem::size_of::<CellInstance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let bg_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("BG Instance Buffer"),
-            size: (max_instances * std::mem::size_of::<CellInstance>()) as u64,
+            size: (MAX_INSTANCES * std::mem::size_of::<CellInstance>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -593,6 +597,7 @@ impl Renderer {
             uniform_buffer,
             font,
             fallback_font,
+            fallback_font_tried,
             font_size,
             cell_width,
             cell_height,
@@ -688,6 +693,25 @@ impl Renderer {
         Ok(())
     }
 
+    /// 日本語フォントを遅延読み込み（必要な時のみ）
+    fn ensure_fallback_font(&mut self, c: char) {
+        // ASCII文字はフォールバック不要
+        if c.is_ascii() {
+            return;
+        }
+        // メインフォントにあればフォールバック不要
+        if self.font.has_glyph(c) {
+            return;
+        }
+        // 既に読み込み試行済みならスキップ
+        if self.fallback_font_tried {
+            return;
+        }
+        // 日本語フォントを読み込み
+        self.fallback_font_tried = true;
+        self.fallback_font = load_japanese_font();
+    }
+
     /// グリッドからインスタンスデータを構築
     fn build_instances(&mut self, terminal: &Terminal) -> (Vec<CellInstance>, Vec<CellInstance>) {
         let grid = terminal.active_grid();
@@ -713,6 +737,8 @@ impl Renderer {
 
                 // 空白以外はグリフを描画
                 if cell.character != ' ' {
+                    // 必要に応じて日本語フォントを遅延読み込み
+                    self.ensure_fallback_font(cell.character);
                     if let Some(glyph) = self.glyph_atlas.get_or_insert(
                         cell.character,
                         &self.font,
@@ -741,6 +767,7 @@ impl Renderer {
                 CursorShape::Beam => '│',
             };
 
+            self.ensure_fallback_font(cursor_char);
             if let Some(glyph) = self.glyph_atlas.get_or_insert(
                 cursor_char,
                 &self.font,
@@ -939,6 +966,8 @@ impl Renderer {
 
                 // 空白以外はグリフを描画
                 if cell.character != ' ' {
+                    // 必要に応じて日本語フォントを遅延読み込み
+                    self.ensure_fallback_font(cell.character);
                     if let Some(glyph) = self.glyph_atlas.get_or_insert(
                         cell.character,
                         &self.font,
@@ -967,6 +996,7 @@ impl Renderer {
                 CursorShape::Beam => '│',
             };
 
+            self.ensure_fallback_font(cursor_char);
             if let Some(glyph) = self.glyph_atlas.get_or_insert(
                 cursor_char,
                 &self.font,
