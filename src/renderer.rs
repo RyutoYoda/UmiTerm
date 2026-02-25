@@ -995,6 +995,7 @@ impl Renderer {
     ) -> Result<(), wgpu::SurfaceError> {
         let mut all_instances = Vec::new();
         let mut all_bg_instances = Vec::new();
+        let mut border_instances = Vec::new();
 
         // 各ペインのインスタンスデータを構築
         for (terminal, rect, is_focused) in panes {
@@ -1003,9 +1004,9 @@ impl Renderer {
             all_bg_instances.extend(bg_instances);
         }
 
-        // ペイン境界線を追加
+        // ペイン境界線を別に収集（後で上書き描画するため）
         if panes.len() > 1 {
-            self.add_pane_borders(panes, &mut all_bg_instances);
+            self.add_pane_borders(panes, &mut border_instances);
         }
 
         // エクスプローラー用の別バッファ（後から別ドローコールで描画）
@@ -1113,7 +1114,38 @@ impl Renderer {
             render_pass.draw(0..4, 0..all_instances.len() as u32);
         }
 
-        // 3. エクスプローラーを別のドローコールで上に描画
+        // 3. ペイン境界線を別パスで上に描画
+        if !border_instances.is_empty() {
+            let borders = if border_instances.len() > MAX_INSTANCES {
+                &border_instances[..MAX_INSTANCES]
+            } else {
+                &border_instances[..]
+            };
+            self.queue
+                .write_buffer(&self.bg_instance_buffer, 0, bytemuck::cast_slice(borders));
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Border Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.bg_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.bg_instance_buffer.slice(..));
+            render_pass.draw(0..4, 0..borders.len() as u32);
+        }
+
+        // 4. エクスプローラーを別のドローコールで上に描画
         if !explorer_bg_instances.is_empty() {
             // エクスプローラー用のバッファを更新
             let explorer_bg = if explorer_bg_instances.len() > MAX_INSTANCES {
@@ -1263,43 +1295,43 @@ impl Renderer {
         panes: &[(&crate::terminal::Terminal, crate::pane::Rect, bool)],
         bg_instances: &mut Vec<CellInstance>,
     ) {
-        let border_color = Color::rgb(60, 60, 60).to_f32_array();
+        let border_color = Color::rgb(80, 220, 200).to_f32_array(); // 明るい水色
 
         for (_terminal, rect, _is_focused) in panes {
             // 右端に境界線を描画（最右端でない場合）
             if rect.x + rect.width < 0.99 {
-                let border_x = (rect.x + rect.width) * self.width as f32 / self.cell_width;
-                let start_row = rect.y * self.height as f32 / self.cell_height;
-                let end_row = (rect.y + rect.height) * self.height as f32 / self.cell_height;
+                let border_col = ((rect.x + rect.width) * self.width as f32 / self.cell_width) as usize;
+                let start_row = (rect.y * self.height as f32 / self.cell_height) as usize;
+                let end_row = ((rect.y + rect.height) * self.height as f32 / self.cell_height) as usize;
 
-                for row in (start_row as usize)..(end_row as usize) {
+                for row in start_row..end_row {
                     bg_instances.push(CellInstance {
-                        position: [border_x - 0.1, row as f32],
+                        position: [border_col as f32, row as f32],
                         fg_color: border_color,
                         bg_color: border_color,
                         uv_offset: [0.0, 0.0],
                         uv_size: [0.0, 0.0],
                         glyph_offset: [0.0, 0.0],
-                        glyph_size: [0.2 * self.cell_width, self.cell_height],
+                        glyph_size: [self.cell_width, self.cell_height], // フルセルサイズ
                     });
                 }
             }
 
             // 下端に境界線を描画（最下端でない場合）
             if rect.y + rect.height < 0.99 {
-                let border_y = (rect.y + rect.height) * self.height as f32 / self.cell_height;
-                let start_col = rect.x * self.width as f32 / self.cell_width;
-                let end_col = (rect.x + rect.width) * self.width as f32 / self.cell_width;
+                let border_row = ((rect.y + rect.height) * self.height as f32 / self.cell_height) as usize;
+                let start_col = (rect.x * self.width as f32 / self.cell_width) as usize;
+                let end_col = ((rect.x + rect.width) * self.width as f32 / self.cell_width) as usize;
 
-                for col in (start_col as usize)..(end_col as usize) {
+                for col in start_col..end_col {
                     bg_instances.push(CellInstance {
-                        position: [col as f32, border_y - 0.1],
+                        position: [col as f32, border_row as f32],
                         fg_color: border_color,
                         bg_color: border_color,
                         uv_offset: [0.0, 0.0],
                         uv_size: [0.0, 0.0],
                         glyph_offset: [0.0, 0.0],
-                        glyph_size: [self.cell_width, 0.2 * self.cell_height],
+                        glyph_size: [self.cell_width, self.cell_height], // フルセルサイズ
                     });
                 }
             }

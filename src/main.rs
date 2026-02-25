@@ -366,15 +366,15 @@ impl WindowState {
         // macOSのCmd+キーを処理
         if super_key {
             if let Key::Character(c) = &event.logical_key {
-                match c.as_str() {
+                match c.to_lowercase().as_str() {
                     "n" => return WindowCommand::NewWindow,
                     "d" if shift => return WindowCommand::SplitVertical,   // Cmd+Shift+D: 横分割
                     "d" => return WindowCommand::SplitHorizontal,          // Cmd+D: 縦分割
                     "w" => return WindowCommand::ClosePane,                // Cmd+W: ペインを閉じる
-                    "]" => return WindowCommand::FocusNextPane,            // Cmd+]: 次のペイン
-                    "[" => return WindowCommand::FocusPrevPane,            // Cmd+[: 前のペイン
                     "v" => return WindowCommand::Paste,                    // Cmd+V: ペースト
                     "b" => return WindowCommand::ToggleExplorer,           // Cmd+B: エクスプローラー
+                    "]" => return WindowCommand::FocusNextPane,            // Cmd+]: 次のペイン
+                    "[" => return WindowCommand::FocusPrevPane,            // Cmd+[: 前のペイン
                     _ => {}
                 }
             }
@@ -800,6 +800,12 @@ impl ApplicationHandler for App {
                 }
                 WindowEvent::Ime(ime) => {
                     state.handle_ime(&ime);
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    state.handle_cursor_moved(position.x, position.y);
+                }
+                WindowEvent::MouseInput { button, state: btn_state, .. } => {
+                    state.handle_mouse_input(button, btn_state);
                 }
                 WindowEvent::RedrawRequested => {
                     state.update();
