@@ -109,6 +109,10 @@ pub struct Pane {
     pub pty: Pty,
     /// 最後のフレーム時刻
     pub last_frame: Instant,
+    /// 最後に出力があった時刻
+    pub last_output: Instant,
+    /// 再描画が必要か（ダーティフラグ）
+    pub dirty: bool,
 }
 
 impl Pane {
@@ -116,22 +120,49 @@ impl Pane {
     pub fn new(cols: u16, rows: u16) -> Result<Self> {
         let terminal = Arc::new(Mutex::new(Terminal::new(cols as usize, rows as usize)));
         let pty = Pty::spawn(cols, rows, None)?;
+        let now = Instant::now();
 
         Ok(Self {
             id: PaneId::new(),
             terminal,
             parser: AnsiParser::new(),
             pty,
-            last_frame: Instant::now(),
+            last_frame: now,
+            last_output: now,
+            dirty: true, // 初期状態は描画が必要
         })
     }
 
     /// フレームを更新（PTYからの出力を読み取り）
-    pub fn update(&mut self) {
+    /// 戻り値: 出力があったかどうか
+    pub fn update(&mut self) -> bool {
         if let Some(data) = self.pty.read() {
             let mut terminal = self.terminal.lock();
             self.parser.process(&mut terminal, &data);
+
+            // DSR等の応答があればPTYに送信
+            if let Some(response) = terminal.take_response() {
+                let _ = self.pty.write(&response);
+            }
+
+            self.last_output = Instant::now();
+            self.dirty = true;
+            true
+        } else {
+            false
         }
+    }
+
+    /// アイドル状態かどうか（指定時間出力がない）
+    #[inline]
+    pub fn is_idle(&self, idle_threshold_ms: u64) -> bool {
+        self.last_output.elapsed().as_millis() > idle_threshold_ms as u128
+    }
+
+    /// ダーティフラグをクリア
+    #[inline]
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 
     /// リサイズ

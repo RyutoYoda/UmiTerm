@@ -273,6 +273,23 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 self.terminal.cursor.shape = shape;
             }
 
+            // ─────────────────────────────────────────────────────────────────
+            // デバイスステータス報告（DSR）
+            // ─────────────────────────────────────────────────────────────────
+            'n' => {
+                match get(0, 0) {
+                    5 => {
+                        // DSR: ターミナル状態報告 → "OK"を返す
+                        self.terminal.queue_response(b"\x1b[0n");
+                    }
+                    6 => {
+                        // DSR: カーソル位置報告
+                        self.terminal.report_cursor_position();
+                    }
+                    _ => {}
+                }
+            }
+
             _ => {
                 log::debug!("未対応のCSI: {}", action);
             }

@@ -187,6 +187,8 @@ pub struct Terminal {
     pub cwd: PathBuf,
     /// テキスト選択状態
     pub selection: Selection,
+    /// PTYへの応答バッファ（DSR等の応答用）
+    pub response_buffer: Vec<u8>,
 }
 
 /// 現在のセルスタイル（新しい文字に適用される）
@@ -225,12 +227,34 @@ impl Terminal {
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
             selection: Selection::default(),
+            response_buffer: Vec::new(),
         }
     }
 
     // ───────────────────────────────────────────────────────────────────────
     // 基本操作
     // ───────────────────────────────────────────────────────────────────────
+
+    /// PTYへの応答をキューに追加
+    pub fn queue_response(&mut self, response: &[u8]) {
+        self.response_buffer.extend_from_slice(response);
+    }
+
+    /// 応答バッファを取り出してクリア
+    pub fn take_response(&mut self) -> Option<Vec<u8>> {
+        if self.response_buffer.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.response_buffer))
+        }
+    }
+
+    /// カーソル位置報告（DSR応答）
+    pub fn report_cursor_position(&mut self) {
+        // ESC [ row ; col R （1-based）
+        let response = format!("\x1b[{};{}R", self.cursor.row + 1, self.cursor.col + 1);
+        self.queue_response(response.as_bytes());
+    }
 
     /// 現在のグリッドを取得
     #[inline]

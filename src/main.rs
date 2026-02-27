@@ -148,11 +148,16 @@ impl WindowState {
     }
 
     /// フレームを更新
-    fn update(&mut self) {
+    /// 戻り値: 再描画が必要か
+    fn update(&mut self) -> bool {
+        let mut needs_redraw = false;
         // すべてのペインを更新
         for pane in self.panes.values_mut() {
-            pane.update();
+            if pane.update() {
+                needs_redraw = true;
+            }
         }
+        needs_redraw
     }
 
     /// 描画
@@ -874,9 +879,16 @@ impl ApplicationHandler for App {
                     state.handle_mouse_input(button, btn_state);
                 }
                 WindowEvent::RedrawRequested => {
-                    state.update();
-                    if !state.render() {
-                        self.should_exit = true;
+                    let has_output = state.update();
+
+                    // 出力があるか、フォーカスペインがアクティブなら描画
+                    // アイドル時（500ms以上出力なし）は描画頻度を下げる
+                    let any_active = state.panes.values().any(|p| !p.is_idle(500));
+
+                    if has_output || any_active || state.selecting_text || state.dragging_border.is_some() {
+                        if !state.render() {
+                            self.should_exit = true;
+                        }
                     }
 
                     // 次のフレームをリクエスト
