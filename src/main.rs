@@ -47,7 +47,7 @@ use arboard::Clipboard;
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent},
+    event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{CursorIcon, Window, WindowId},
@@ -683,6 +683,55 @@ impl WindowState {
         }
     }
 
+    /// マウスホイール/トラックパッドスクロールを処理
+    fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        // スクロール量を計算（行数）
+        let lines = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y as i32,
+            MouseScrollDelta::PixelDelta(pos) => {
+                // ピクセルデルタを行数に変換（約20ピクセル = 1行）
+                (pos.y / 20.0) as i32
+            }
+        };
+
+        if lines == 0 {
+            return;
+        }
+
+        // フォーカスされたペインにスクロールイベントを送信
+        if let Some(pane) = self.panes.get(&self.focused_pane) {
+            let terminal = pane.terminal.lock();
+            let mouse_tracking = terminal.mode.contains(terminal::TerminalMode::MOUSE_TRACKING);
+            drop(terminal);
+
+            let abs_lines = lines.unsigned_abs() as usize;
+
+            if mouse_tracking {
+                // マウストラッキング有効時: SGRマウスエスケープシーケンスを送信
+                let (x, y) = self.mouse_pixel_pos;
+                let rects = self.layout.calculate_rects(Rect::full());
+                let (col, row) = if let Some((_, rect)) = rects.iter().find(|(id, _)| *id == self.focused_pane) {
+                    self.mouse_to_cell(x, y, rect)
+                } else {
+                    (0, 0)
+                };
+
+                // ボタン64 = スクロールアップ、65 = スクロールダウン
+                for _ in 0..abs_lines {
+                    let button = if lines > 0 { 64 } else { 65 };
+                    let seq = format!("\x1b[<{};{};{}M", button, col + 1, row + 1);
+                    let _ = pane.pty.write(seq.as_bytes());
+                }
+            } else {
+                // マウストラッキング無効時: 矢印キーを送信
+                let key = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" }; // 上/下矢印
+                for _ in 0..abs_lines {
+                    let _ = pane.pty.write(key);
+                }
+            }
+        }
+    }
+
     /// すべてのペインをリサイズ
     fn resize_all_panes(&mut self) {
         let (width, height) = self.renderer.screen_size();
@@ -878,14 +927,18 @@ impl ApplicationHandler for App {
                 WindowEvent::MouseInput { button, state: btn_state, .. } => {
                     state.handle_mouse_input(button, btn_state);
                 }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    state.handle_mouse_wheel(delta);
+                }
                 WindowEvent::RedrawRequested => {
                     let has_output = state.update();
 
                     // 出力があるか、フォーカスペインがアクティブなら描画
                     // アイドル時（500ms以上出力なし）は描画頻度を下げる
                     let any_active = state.panes.values().any(|p| !p.is_idle(500));
+                    let explorer_visible = state.explorer.visible;
 
-                    if has_output || any_active || state.selecting_text || state.dragging_border.is_some() {
+                    if has_output || any_active || state.selecting_text || state.dragging_border.is_some() || explorer_visible {
                         if !state.render() {
                             self.should_exit = true;
                         }
